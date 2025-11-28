@@ -8,7 +8,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// PostgreSQL connection
+// Database connection
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
@@ -16,15 +16,15 @@ const pool = new Pool({
 
 const JWT_SECRET = process.env.JWT_SECRET || 'kenya-secret-2024';
 
-// Create tables
+// ✅ CREATE TABLES IF THEY DON'T EXIST
 const createTables = async () => {
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
-        name VARCHAR(100),
-        email VARCHAR(100) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
+        name TEXT,
+        email TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -40,26 +40,18 @@ createTables();
 app.get('/', (req, res) => {
   res.json({ 
     message: '🇰🇪 Kenya Auth API Running', 
-    database: 'PostgreSQL',
-    environment: process.env.NODE_ENV || 'development'
+    status: 'OK',
+    database: 'PostgreSQL'
   });
 });
 
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    database: 'PostgreSQL',
-    country: 'Kenya'
-  });
-});
-
-// Test database
+// Test database connection
 app.get('/test-db', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW() as time');
     res.json({ 
       success: true, 
-      message: '✅ PostgreSQL connected!',
+      message: '✅ Database connected!',
       time: result.rows[0].time
     });
   } catch (error) {
@@ -76,16 +68,19 @@ app.post('/api/register', async (req, res) => {
     const { name, email, password } = req.body;
 
     if (!name || !email || !password) {
-      return res.status(400).json({ error: 'All fields required' });
+      return res.status(400).json({ error: 'All fields are required' });
     }
 
+    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Save user
     const result = await pool.query(
       'INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id, name, email',
       [name, email, hashedPassword]
     );
 
+    // Create token
     const token = jwt.sign({ userId: result.rows[0].id }, JWT_SECRET);
 
     res.json({
@@ -113,6 +108,7 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password required' });
     }
 
+    // Find user
     const result = await pool.query(
       'SELECT * FROM users WHERE email = $1',
       [email]
@@ -123,12 +119,14 @@ app.post('/api/login', async (req, res) => {
     }
 
     const user = result.rows[0];
+
+    // Check password
     const validPassword = await bcrypt.compare(password, user.password);
-    
     if (!validPassword) {
       return res.status(400).json({ error: 'Invalid password' });
     }
 
+    // Create token
     const token = jwt.sign({ userId: user.id }, JWT_SECRET);
 
     res.json({
@@ -145,6 +143,5 @@ app.post('/api/login', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🗄️ PostgreSQL database connected`);
+  console.log(`🚀 Kenya Auth API running on port ${PORT}`);
 });

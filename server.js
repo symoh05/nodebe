@@ -15,16 +15,53 @@ app.use(cors({
 
 app.use(express.json());
 
-// Database connection
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
+// Log environment info
+console.log('🔧 Environment check:');
+console.log('DATABASE_URL exists:', !!process.env.DATABASE_URL);
+console.log('PORT:', process.env.PORT);
+console.log('NODE_ENV:', process.env.NODE_ENV);
+
+// Database connection with detailed error handling
+let pool;
+if (process.env.DATABASE_URL) {
+  try {
+    console.log('🔗 Attempting database connection...');
+    console.log('Database host:', process.env.DATABASE_URL.split('@')[1]?.split(':')[0]);
+    
+    pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { 
+        rejectUnauthorized: false 
+      },
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
+    });
+
+    // Test connection immediately
+    pool.query('SELECT NOW()')
+      .then(result => {
+        console.log('✅ Database connection test successful:', result.rows[0]);
+      })
+      .catch(error => {
+        console.error('❌ Database connection test failed:', error.message);
+      });
+
+  } catch (error) {
+    console.error('❌ Database pool creation failed:', error);
+  }
+} else {
+  console.error('❌ DATABASE_URL environment variable is missing!');
+}
 
 const JWT_SECRET = process.env.JWT_SECRET || 'kenya-secret-2024';
 
 // Create tables
 const createTables = async () => {
+  if (!pool) {
+    console.error('❌ Cannot create tables - database pool not available');
+    return;
+  }
+  
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -37,18 +74,20 @@ const createTables = async () => {
     `);
     console.log('✅ PostgreSQL tables ready');
   } catch (error) {
-    console.error('❌ Table creation error:', error);
+    console.error('❌ Table creation error:', error.message);
   }
 };
 
-createTables();
+// Wait a bit then create tables
+setTimeout(createTables, 2000);
 
-// Test route
+// Routes
 app.get('/', (req, res) => {
   res.json({ 
     message: '🇰🇪 Kenya Auth API Running', 
     status: 'OK',
-    endpoints: ['/api/register', '/api/login', '/api/profile']
+    database: pool ? 'Connected' : 'Not Connected',
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -56,21 +95,31 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
-    database: 'PostgreSQL',
+    database: process.env.DATABASE_URL ? 'Configured' : 'Missing DATABASE_URL',
     timestamp: new Date().toISOString()
   });
 });
 
 // Test database connection
 app.get('/test-db', async (req, res) => {
+  if (!pool) {
+    return res.status(500).json({ 
+      success: false, 
+      error: 'Database pool not initialized',
+      details: 'DATABASE_URL might be incorrect or database is unreachable'
+    });
+  }
+  
   try {
-    const result = await pool.query('SELECT NOW() as time');
+    const result = await pool.query('SELECT NOW() as time, version() as version');
     res.json({ 
       success: true, 
       message: '✅ Database connected!',
-      time: result.rows[0].time
+      time: result.rows[0].time,
+      version: result.rows[0].version
     });
   } catch (error) {
+    console.error('❌ Database test error:', error.message);
     res.status(500).json({ 
       success: false, 
       error: 'Database connection failed',
@@ -81,6 +130,10 @@ app.get('/test-db', async (req, res) => {
 
 // REGISTER endpoint
 app.post('/api/register', async (req, res) => {
+  if (!pool) {
+    return res.status(500).json({ error: 'Database not available' });
+  }
+  
   try {
     console.log('📝 Registration attempt:', req.body);
     
@@ -110,7 +163,7 @@ app.post('/api/register', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Registration error:', error);
+    console.error('Registration error:', error.message);
     if (error.code === '23505') {
       res.status(400).json({ error: 'Email already exists' });
     } else {
@@ -121,6 +174,10 @@ app.post('/api/register', async (req, res) => {
 
 // LOGIN endpoint
 app.post('/api/login', async (req, res) => {
+  if (!pool) {
+    return res.status(500).json({ error: 'Database not available' });
+  }
+  
   try {
     console.log('🔐 Login attempt:', req.body);
     
@@ -144,6 +201,7 @@ app.post('/api/login', async (req, res) => {
 
     // Check password
     const validPassword = await bcrypt.compare(password, user.password);
+    
     if (!validPassword) {
       return res.status(400).json({ error: 'Invalid password' });
     }
@@ -159,46 +217,14 @@ app.post('/api/login', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('❌ Login error:', error.message);
     res.status(500).json({ error: 'Server error: ' + error.message });
-  }
-});
-
-// PROFILE endpoint
-app.get('/api/profile', async (req, res) => {
-  try {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) {
-      return res.status(401).json({ error: 'No token provided' });
-    }
-
-    const decoded = jwt.verify(token, JWT_SECRET);
-    
-    const result = await pool.query(
-      'SELECT id, name, email, created_at FROM users WHERE id = $1',
-      [decoded.userId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    res.json({ user: result.rows[0] });
-
-  } catch (error) {
-    res.status(401).json({ error: 'Invalid token' });
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🗄️ PostgreSQL database connected`);
-  console.log(`🌍 Endpoints available:`);
-  console.log(`   GET  /`);
-  console.log(`   GET  /health`);
-  console.log(`   GET  /test-db`);
-  console.log(`   POST /api/register`);
-  console.log(`   POST /api/login`);
-  console.log(`   GET  /api/profile`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🗄️ DATABASE_URL: ${process.env.DATABASE_URL ? 'Set' : 'Missing!'}`);
 });
